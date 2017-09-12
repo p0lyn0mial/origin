@@ -14,19 +14,23 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package types just provides input types to the set generator. It also
-// contains a "go generate" block.
-// (You must first `go install k8s.io/code-generator/cmd/set-gen`)
-package types
+// go-to-protobuf generates a Protobuf IDL from a Go struct, respecting any
+// existing IDL tags on the Go struct.
+package main
 
-//go:generate set-gen -i k8s.io/kubernetes/pkg/util/sets/types
+import (
+	"k8s.io/code-generator/cmd/go-to-protobuf/protobuf"
 
-type ReferenceSetTypes struct {
-	// These types all cause files to be generated.
-	// These types should be reflected in the ouput of
-	// the "//pkg/util/sets:set-gen" genrule.
-	a int64
-	b int
-	c byte
-	d string
+	flag "github.com/spf13/pflag"
+)
+
+var g = protobuf.New()
+
+func init() {
+	g.BindFlags(flag.CommandLine)
+}
+
+func main() {
+	flag.Parse()
+	protobuf.Run(g)
 }
