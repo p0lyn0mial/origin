@@ -79,13 +79,12 @@ func PatchResource(r rest.Patcher, scope RequestScope, admit admission.Interface
 		ctx := scope.ContextFunc(req)
 		ctx = request.WithNamespace(ctx, namespace)
 
-		versionedObj, err := converter.ConvertToVersion(r.New(), scope.Kind.GroupVersion())
+		patchJS, err := limitedReadBody(req, scope.MaxRequestBodyBytes)
 		if err != nil {
 			scope.err(err, w, req)
 			return
 		}
 
-		patchJS, err := readBody(req)
 		if err != nil {
 			scope.err(err, w, req)
 			return
