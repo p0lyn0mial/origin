@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+bash -version
+
 # Copyright 2014 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -78,8 +80,8 @@ QUICK_PATTERNS+=(
   "verify-test-images.sh"
 )
 
-while IFS='' read -r line; do EXCLUDED_CHECKS+=("$line"); done < <(ls "${EXCLUDED_PATTERNS[@]/#/${KUBE_ROOT}\/hack\/}" 2>/dev/null || true)
-while IFS='' read -r line; do QUICK_CHECKS+=("$line"); done < <(ls "${QUICK_PATTERNS[@]/#/${KUBE_ROOT}\/hack\/}" 2>/dev/null || true)
+while IFS='' read -r line; do EXCLUDED_CHECKS+=("$line"); done < <(ls ${EXCLUDED_PATTERNS[@]/#/${KUBE_ROOT}\/hack\/} 2>/dev/null || true)
+while IFS='' read -r line; do QUICK_CHECKS+=("$line"); done < <(ls ${QUICK_PATTERNS[@]/#/${KUBE_ROOT}\/hack\/} 2>/dev/null || true)
 TARGET_LIST=()
 IFS=" " read -r -a TARGET_LIST <<< "${WHAT:-}"
 
@@ -91,6 +93,7 @@ function is-excluded {
   done
   return 1
 }
+
 
 function is-quick {
   for e in "${QUICK_CHECKS[@]}"; do
