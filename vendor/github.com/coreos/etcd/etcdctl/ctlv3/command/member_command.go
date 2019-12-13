@@ -120,14 +120,12 @@ func memberAddCommandFunc(cmd *cobra.Command, args []string) {
 	if _, ok := (display).(*simplePrinter); ok {
 		ctx, cancel = commandCtx(cmd)
 		listResp, err := cli.MemberList(ctx)
-		// make sure the member who served member list request has the latest member list.
-		syncedMemberSet := make(map[uint64]struct{})
-		syncedMemberSet[resp.Header.MemberId] = struct{}{} // the member who served member add is guaranteed to have the latest member list.
+		// get latest member list; if there's failover new member might have outdated list
 		for {
 			if err != nil {
 				ExitWithError(ExitError, err)
 			}
-			if _, ok := syncedMemberSet[listResp.Header.MemberId]; ok {
+			if listResp.Header.MemberId == resp.Header.MemberId {
 				break
 			}
 			// quorum get to sync cluster list
@@ -135,7 +133,7 @@ func memberAddCommandFunc(cmd *cobra.Command, args []string) {
 			if gerr != nil {
 				ExitWithError(ExitError, err)
 			}
-			syncedMemberSet[gresp.Header.MemberId] = struct{}{}
+			resp.Header.MemberId = gresp.Header.MemberId
 			listResp, err = cli.MemberList(ctx)
 		}
 		cancel()
