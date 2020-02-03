@@ -14,156 +14,52 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package apiserver
+package apiserver_test
 
 import (
 	"fmt"
-	"k8s.io/utils/pointer"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/davecgh/go-spew/spew"
-
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1listers "k8s.io/client-go/listers/core/v1"
 	clienttesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/util/workqueue"
 	apiregistration "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	"k8s.io/kube-aggregator/pkg/client/clientset_generated/clientset/fake"
 	apiregistrationclient "k8s.io/kube-aggregator/pkg/client/clientset_generated/clientset/typed/apiregistration/v1"
 	listers "k8s.io/kube-aggregator/pkg/client/listers/apiregistration/v1"
+	apiserver "k8s.io/kube-aggregator/pkg/controllers/status"
 )
-
-const (
-	testServicePort     = 1234
-	testServicePortName = "testPort"
-)
-
-func newEndpoints(namespace, name string) *v1.Endpoints {
-	return &v1.Endpoints{
-		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
-	}
-}
-
-func newEndpointsWithAddress(namespace, name string, port int32, portName string) *v1.Endpoints {
-	return &v1.Endpoints{
-		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
-		Subsets: []v1.EndpointSubset{
-			{
-				Addresses: []v1.EndpointAddress{
-					{
-						IP: "val",
-					},
-				},
-				Ports: []v1.EndpointPort{
-					{
-						Name: portName,
-						Port: port,
-					},
-				},
-			},
-		},
-	}
-}
-
-func newService(namespace, name string, port int32, portName string) *v1.Service {
-	return &v1.Service{
-		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
-		Spec: v1.ServiceSpec{
-			Type: v1.ServiceTypeClusterIP,
-			Ports: []v1.ServicePort{
-				{Port: port, Name: portName},
-			},
-		},
-	}
-}
-
-func newLocalAPIService(name string) *apiregistration.APIService {
-	return &apiregistration.APIService{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-	}
-}
-
-func newRemoteAPIService(name string) *apiregistration.APIService {
-	return &apiregistration.APIService{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec: apiregistration.APIServiceSpec{
-			Group:   strings.SplitN(name, ".", 2)[0],
-			Version: strings.SplitN(name, ".", 2)[1],
-			Service: &apiregistration.ServiceReference{
-				Namespace: "foo",
-				Name:      "bar",
-				Port:      pointer.Int32Ptr(testServicePort),
-			},
-		},
-	}
-}
-
-func setupAPIServices(apiServices []*apiregistration.APIService) (*AvailableConditionController, *fake.Clientset) {
-	fakeClient := fake.NewSimpleClientset()
-	apiServiceIndexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
-	serviceIndexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
-	endpointsIndexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
-
-	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer testServer.Close()
-
-	for _, o := range apiServices {
-		apiServiceIndexer.Add(o)
-	}
-
-	c := AvailableConditionController{
-		apiServiceClient: fakeClient.ApiregistrationV1(),
-		apiServiceLister: listers.NewAPIServiceLister(apiServiceIndexer),
-		serviceLister:    v1listers.NewServiceLister(serviceIndexer),
-		endpointsLister:  v1listers.NewEndpointsLister(endpointsIndexer),
-		discoveryClient:  testServer.Client(),
-		serviceResolver:  &fakeServiceResolver{url: testServer.URL},
-		queue: workqueue.NewNamedRateLimitingQueue(
-			// We want a fairly tight requeue time.  The controller listens to the API, but because it relies on the routability of the
-			// service network, it is possible for an external, non-watchable factor to affect availability.  This keeps
-			// the maximum disruption time to a minimum, but it does prevent hot loops.
-			workqueue.NewItemExponentialFailureRateLimiter(5*time.Millisecond, 30*time.Second),
-			"AvailableConditionController"),
-	}
-	for _, svc := range apiServices {
-		c.addAPIService(svc)
-	}
-	return &c, fakeClient
-}
 
 func BenchmarkBuildCache(b *testing.B) {
 	apiServiceName := "remote.group"
 	// model 1 APIService pointing at a given service, and 30 pointing at local group/versions
-	apiServices := []*apiregistration.APIService{newRemoteAPIService(apiServiceName)}
+	apiServices := []*apiregistration.APIService{apiserver.NewRemoteAPIServiceForTest(apiServiceName)}
 	for i := 0; i < 30; i++ {
-		apiServices = append(apiServices, newLocalAPIService(fmt.Sprintf("local.group%d", i)))
+		apiServices = append(apiServices, apiserver.NewLocalAPIServiceForTest(fmt.Sprintf("local.group%d", i)))
 	}
 	// model one service backing an API service, and 100 unrelated services
-	services := []*v1.Service{newService("foo", "bar", testServicePort, testServicePortName)}
+	services := []*v1.Service{apiserver.NewServiceForTest("foo", "bar", apiserver.TestServicePort, apiserver.TestServicePortName)}
 	for i := 0; i < 100; i++ {
-		services = append(services, newService("foo", fmt.Sprintf("bar%d", i), testServicePort, testServicePortName))
+		services = append(services, apiserver.NewServiceForTest("foo", fmt.Sprintf("bar%d", i), apiserver.TestServicePort, apiserver.TestServicePortName))
 	}
-	c, _ := setupAPIServices(apiServices)
+	c, _ := apiserver.SetupAPIServicesForTest(apiServices)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for n := 1; n <= b.N; n++ {
 		for _, svc := range services {
-			c.addService(svc)
+			c.AddServiceForTest(svc)
 		}
 		for _, svc := range services {
-			c.updateService(svc, svc)
+			c.UpdateServiceForTest(svc, svc)
 		}
 		for _, svc := range services {
-			c.deleteService(svc)
+			c.DeleteServiceForTest(svc)
 		}
 	}
 }
@@ -182,18 +78,18 @@ func TestBuildCache(t *testing.T) {
 		{
 			name:           "api service",
 			apiServiceName: "remote.group",
-			apiServices:    []*apiregistration.APIService{newRemoteAPIService("remote.group")},
-			services:       []*v1.Service{newService("foo", "bar", testServicePort, testServicePortName)},
+			apiServices:    []*apiregistration.APIService{apiserver.NewRemoteAPIServiceForTest("remote.group")},
+			services:       []*v1.Service{apiserver.NewServiceForTest("foo", "bar", apiserver.TestServicePort, apiserver.TestServicePortName)},
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			c, fakeClient := setupAPIServices(tc.apiServices)
+			c, fakeClient := apiserver.SetupAPIServicesForTest(tc.apiServices)
 			for _, svc := range tc.services {
-				c.addService(svc)
+				c.AddServiceForTest(svc)
 			}
 
-			c.sync(tc.apiServiceName)
+			c.SyncForTest(tc.apiServiceName)
 
 			// ought to have one action writing status
 			if e, a := 1, len(fakeClient.Actions()); e != a {
@@ -217,7 +113,7 @@ func TestSync(t *testing.T) {
 		{
 			name:           "local",
 			apiServiceName: "local.group",
-			apiServices:    []*apiregistration.APIService{newLocalAPIService("local.group")},
+			apiServices:    []*apiregistration.APIService{apiserver.NewLocalAPIServiceForTest("local.group")},
 			expectedAvailability: apiregistration.APIServiceCondition{
 				Type:    apiregistration.Available,
 				Status:  apiregistration.ConditionTrue,
@@ -228,8 +124,8 @@ func TestSync(t *testing.T) {
 		{
 			name:           "no service",
 			apiServiceName: "remote.group",
-			apiServices:    []*apiregistration.APIService{newRemoteAPIService("remote.group")},
-			services:       []*v1.Service{newService("foo", "not-bar", testServicePort, testServicePortName)},
+			apiServices:    []*apiregistration.APIService{apiserver.NewRemoteAPIServiceForTest("remote.group")},
+			services:       []*v1.Service{apiserver.NewServiceForTest("foo", "not-bar", apiserver.TestServicePort, apiserver.TestServicePortName)},
 			expectedAvailability: apiregistration.APIServiceCondition{
 				Type:    apiregistration.Available,
 				Status:  apiregistration.ConditionFalse,
@@ -240,7 +136,7 @@ func TestSync(t *testing.T) {
 		{
 			name:           "service on bad port",
 			apiServiceName: "remote.group",
-			apiServices:    []*apiregistration.APIService{newRemoteAPIService("remote.group")},
+			apiServices:    []*apiregistration.APIService{apiserver.NewRemoteAPIServiceForTest("remote.group")},
 			services: []*v1.Service{{
 				ObjectMeta: metav1.ObjectMeta{Namespace: "foo", Name: "bar"},
 				Spec: v1.ServiceSpec{
@@ -250,19 +146,19 @@ func TestSync(t *testing.T) {
 					},
 				},
 			}},
-			endpoints: []*v1.Endpoints{newEndpointsWithAddress("foo", "bar", testServicePort, testServicePortName)},
+			endpoints: []*v1.Endpoints{apiserver.NewEndpointsWithAddressForTest("foo", "bar", apiserver.TestServicePort, apiserver.TestServicePortName)},
 			expectedAvailability: apiregistration.APIServiceCondition{
 				Type:    apiregistration.Available,
 				Status:  apiregistration.ConditionFalse,
 				Reason:  "ServicePortError",
-				Message: fmt.Sprintf(`service/bar in "foo" is not listening on port %d`, testServicePort),
+				Message: fmt.Sprintf(`service/bar in "foo" is not listening on port %d`, apiserver.TestServicePort),
 			},
 		},
 		{
 			name:           "no endpoints",
 			apiServiceName: "remote.group",
-			apiServices:    []*apiregistration.APIService{newRemoteAPIService("remote.group")},
-			services:       []*v1.Service{newService("foo", "bar", testServicePort, testServicePortName)},
+			apiServices:    []*apiregistration.APIService{apiserver.NewRemoteAPIServiceForTest("remote.group")},
+			services:       []*v1.Service{apiserver.NewServiceForTest("foo", "bar", apiserver.TestServicePort, apiserver.TestServicePortName)},
 			expectedAvailability: apiregistration.APIServiceCondition{
 				Type:    apiregistration.Available,
 				Status:  apiregistration.ConditionFalse,
@@ -273,9 +169,9 @@ func TestSync(t *testing.T) {
 		{
 			name:           "missing endpoints",
 			apiServiceName: "remote.group",
-			apiServices:    []*apiregistration.APIService{newRemoteAPIService("remote.group")},
-			services:       []*v1.Service{newService("foo", "bar", testServicePort, testServicePortName)},
-			endpoints:      []*v1.Endpoints{newEndpoints("foo", "bar")},
+			apiServices:    []*apiregistration.APIService{apiserver.NewRemoteAPIServiceForTest("remote.group")},
+			services:       []*v1.Service{apiserver.NewServiceForTest("foo", "bar", apiserver.TestServicePort, apiserver.TestServicePortName)},
+			endpoints:      []*v1.Endpoints{apiserver.NewEndpointsForTest("foo", "bar")},
 			expectedAvailability: apiregistration.APIServiceCondition{
 				Type:    apiregistration.Available,
 				Status:  apiregistration.ConditionFalse,
@@ -286,22 +182,22 @@ func TestSync(t *testing.T) {
 		{
 			name:           "wrong endpoint port name",
 			apiServiceName: "remote.group",
-			apiServices:    []*apiregistration.APIService{newRemoteAPIService("remote.group")},
-			services:       []*v1.Service{newService("foo", "bar", testServicePort, testServicePortName)},
-			endpoints:      []*v1.Endpoints{newEndpointsWithAddress("foo", "bar", testServicePort, "wrongName")},
+			apiServices:    []*apiregistration.APIService{apiserver.NewRemoteAPIServiceForTest("remote.group")},
+			services:       []*v1.Service{apiserver.NewServiceForTest("foo", "bar", apiserver.TestServicePort, apiserver.TestServicePortName)},
+			endpoints:      []*v1.Endpoints{apiserver.NewEndpointsWithAddressForTest("foo", "bar", apiserver.TestServicePort, "wrongName")},
 			expectedAvailability: apiregistration.APIServiceCondition{
 				Type:    apiregistration.Available,
 				Status:  apiregistration.ConditionFalse,
 				Reason:  "MissingEndpoints",
-				Message: fmt.Sprintf(`endpoints for service/bar in "foo" have no addresses with port name "%s"`, testServicePortName),
+				Message: fmt.Sprintf(`endpoints for service/bar in "foo" have no addresses with port name "%s"`, apiserver.TestServicePortName),
 			},
 		},
 		{
 			name:           "remote",
 			apiServiceName: "remote.group",
-			apiServices:    []*apiregistration.APIService{newRemoteAPIService("remote.group")},
-			services:       []*v1.Service{newService("foo", "bar", testServicePort, testServicePortName)},
-			endpoints:      []*v1.Endpoints{newEndpointsWithAddress("foo", "bar", testServicePort, testServicePortName)},
+			apiServices:    []*apiregistration.APIService{apiserver.NewRemoteAPIServiceForTest("remote.group")},
+			services:       []*v1.Service{apiserver.NewServiceForTest("foo", "bar", apiserver.TestServicePort, apiserver.TestServicePortName)},
+			endpoints:      []*v1.Endpoints{apiserver.NewEndpointsWithAddressForTest("foo", "bar", apiserver.TestServicePort, apiserver.TestServicePortName)},
 			expectedAvailability: apiregistration.APIServiceCondition{
 				Type:    apiregistration.Available,
 				Status:  apiregistration.ConditionTrue,
@@ -312,9 +208,9 @@ func TestSync(t *testing.T) {
 		{
 			name:               "remote-bad-return",
 			apiServiceName:     "remote.group",
-			apiServices:        []*apiregistration.APIService{newRemoteAPIService("remote.group")},
-			services:           []*v1.Service{newService("foo", "bar", testServicePort, testServicePortName)},
-			endpoints:          []*v1.Endpoints{newEndpointsWithAddress("foo", "bar", testServicePort, testServicePortName)},
+			apiServices:        []*apiregistration.APIService{apiserver.NewRemoteAPIServiceForTest("remote.group")},
+			services:           []*v1.Service{apiserver.NewServiceForTest("foo", "bar", apiserver.TestServicePort, apiserver.TestServicePortName)},
+			endpoints:          []*v1.Endpoints{apiserver.NewEndpointsWithAddressForTest("foo", "bar", apiserver.TestServicePort, apiserver.TestServicePortName)},
 			forceDiscoveryFail: true,
 			expectedAvailability: apiregistration.APIServiceCondition{
 				Type:    apiregistration.Available,
@@ -349,15 +245,15 @@ func TestSync(t *testing.T) {
 			}))
 			defer testServer.Close()
 
-			c := AvailableConditionController{
-				apiServiceClient: fakeClient.ApiregistrationV1(),
-				apiServiceLister: listers.NewAPIServiceLister(apiServiceIndexer),
-				serviceLister:    v1listers.NewServiceLister(serviceIndexer),
-				endpointsLister:  v1listers.NewEndpointsLister(endpointsIndexer),
-				discoveryClient:  testServer.Client(),
-				serviceResolver:  &fakeServiceResolver{url: testServer.URL},
-			}
-			c.sync(tc.apiServiceName)
+			c := apiserver.NewAvailableConditionControllerForTest(
+				fakeClient.ApiregistrationV1(),
+				listers.NewAPIServiceLister(apiServiceIndexer),
+				v1listers.NewServiceLister(serviceIndexer),
+				v1listers.NewEndpointsLister(endpointsIndexer),
+				testServer.Client(),
+				&apiserver.FakeServiceResolver{Url: testServer.URL},
+			)
+			c.SyncForTest(tc.apiServiceName)
 
 			// ought to have one action writing status
 			if e, a := 1, len(fakeClient.Actions()); e != a {
@@ -392,26 +288,18 @@ func TestSync(t *testing.T) {
 	}
 }
 
-type fakeServiceResolver struct {
-	url string
-}
-
-func (f *fakeServiceResolver) ResolveEndpoint(namespace, name string, port int32) (*url.URL, error) {
-	return url.Parse(f.url)
-}
-
 func TestUpdateAPIServiceStatus(t *testing.T) {
 	foo := &apiregistration.APIService{Status: apiregistration.APIServiceStatus{Conditions: []apiregistration.APIServiceCondition{{Type: "foo"}}}}
 	bar := &apiregistration.APIService{Status: apiregistration.APIServiceStatus{Conditions: []apiregistration.APIServiceCondition{{Type: "bar"}}}}
 
 	fakeClient := fake.NewSimpleClientset()
-	updateAPIServiceStatus(fakeClient.ApiregistrationV1().(apiregistrationclient.APIServicesGetter), foo, foo)
+	apiserver.UpdateAPIServiceStatusForTest(fakeClient.ApiregistrationV1().(apiregistrationclient.APIServicesGetter), foo, foo)
 	if e, a := 0, len(fakeClient.Actions()); e != a {
 		t.Error(spew.Sdump(fakeClient.Actions()))
 	}
 
 	fakeClient.ClearActions()
-	updateAPIServiceStatus(fakeClient.ApiregistrationV1().(apiregistrationclient.APIServicesGetter), foo, bar)
+	apiserver.UpdateAPIServiceStatusForTest(fakeClient.ApiregistrationV1().(apiregistrationclient.APIServicesGetter), foo, bar)
 	if e, a := 1, len(fakeClient.Actions()); e != a {
 		t.Error(spew.Sdump(fakeClient.Actions()))
 	}
